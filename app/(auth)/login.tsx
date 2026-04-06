@@ -39,10 +39,9 @@ export default function LoginScreen() {
     });
     if (error) {
       setAuthError(error.message);
+    } else {
+      router.replace('/(app)');
     }
-    // On success — no redirect needed here.
-    // The onAuthStateChange listener in _layout.tsx detects the new session
-    // and automatically redirects to (app). Clean separation of concerns.
   };
 
   return (

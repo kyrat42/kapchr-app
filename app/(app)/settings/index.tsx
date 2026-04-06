@@ -5,10 +5,10 @@ export default function SettingsScreen() {
   const router = useRouter();
 
   const items = [
-    { label: 'Weekly Template', route: './template' },
-    { label: 'Areas of Life', route: './areas' },
-    { label: 'Priority Levels', route: './priorities' },
-    { label: 'Account', route: './account' },
+    { label: 'Weekly Template', route: '/(app)/settings/template' },
+    { label: 'Areas of Life', route: '/(app)/settings/areas' },
+    { label: 'Priority Levels', route: '/(app)/settings/priorities' },
+    { label: 'Account', route: '/(app)/settings/account' },
   ] as const;
 
   return (

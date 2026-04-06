@@ -42,11 +42,10 @@ export default function SignupScreen() {
     if (error) {
       setAuthError(error.message);
     } else if (!result.session) {
-      // Supabase accepted the signup but didn't return a session.
-      // This means email confirmation is still enabled in the dashboard.
       setAuthError('Check your email to confirm your account before logging in.');
+    } else {
+      router.replace('/(app)');
     }
-    // If result.session exists, onAuthStateChange in _layout.tsx handles the redirect
   };
 
   return (
