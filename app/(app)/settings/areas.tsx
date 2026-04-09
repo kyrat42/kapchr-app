@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, FlatList,
   Modal, TextInput, ActivityIndicator, Alert,
@@ -27,6 +27,7 @@ export default function AreasScreen() {
   const [name, setName] = useState('');
   const [selectedColor, setSelectedColor] = useState<PaletteKey>('forest');
   const [saving, setSaving] = useState(false);
+  const nameInputRef = useRef<TextInput>(null);
 
   // Refresh areas every time this screen comes into focus
   // (e.g. navigating back from another settings page)
@@ -180,6 +181,7 @@ export default function AreasScreen() {
         animationType="slide"
         presentationStyle="pageSheet"
         onRequestClose={closeModal}
+        onShow={() => setTimeout(() => nameInputRef.current?.focus(), 100)}
       >
         <View style={styles.modal}>
 
@@ -203,12 +205,12 @@ export default function AreasScreen() {
             {/* Name field */}
             <Text style={styles.fieldLabel}>Name</Text>
             <TextInput
+              ref={nameInputRef}
               style={styles.textInput}
               value={name}
               onChangeText={setName}
               placeholder="e.g. Health & Wellness"
               maxLength={40}
-              autoFocus
             />
 
             {/* Color picker */}

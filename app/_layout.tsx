@@ -7,7 +7,6 @@ export default function RootLayout() {
   const { setSession, setLoading } = useAuthStore();
 
   useEffect(() => {
-    // Safety net: never leave the app stuck loading for more than 5 seconds
     const timeout = setTimeout(() => setLoading(false), 5000);
 
     const initAuth = async () => {
@@ -24,7 +23,6 @@ export default function RootLayout() {
 
     initAuth();
 
-    // Keep the session in sync after login/logout/token refresh
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
     });
