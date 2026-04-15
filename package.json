@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
+    "@react-native-community/datetimepicker": "8.4.4",
     "@supabase/supabase-js": "^2.101.1",
     "expo": "~54.0.33",
     "expo-constants": "~18.0.13",
