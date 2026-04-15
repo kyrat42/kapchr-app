@@ -215,7 +215,7 @@ export default function TemplateScreen() {
   const confirmDelete = (block: TemplateBlock) => {
     Alert.alert(
       'Delete Block',
-      'Remove this block from the template? Future dates will no longer include it.',
+      'Remove this block from the template? Any scheduled tasks will move to the All Day section as a reminder to reschedule.',
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Delete', style: 'destructive', onPress: () => deleteBlock(block.id) },
@@ -224,6 +224,15 @@ export default function TemplateScreen() {
   };
 
   const deleteBlock = async (id: string) => {
+    // Move all future task instances for this block to All Day before deleting
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    await supabase
+      .from('task_instances')
+      .update({ weekly_template_block_id: null })
+      .eq('weekly_template_block_id', id)
+      .gte('scheduled_date', todayStr);
+
     const { error } = await supabase.from('weekly_template_blocks').delete().eq('id', id);
     if (!error) setAllBlocks(prev => prev.filter(b => b.id !== id));
   };

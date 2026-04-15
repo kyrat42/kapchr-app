@@ -17,7 +17,16 @@ interface TemplateBlock {
   area_of_life_id: string | null;
   day_of_week: number;
   start_time: string;
+  end_time: string;
   is_all_day: boolean;
+}
+
+interface BlockOverrideLocal {
+  id: string;
+  weekly_template_block_id: string;
+  date: string;
+  start_time: string;
+  is_cancelled: boolean;
 }
 
 interface UserSettings {
@@ -124,13 +133,26 @@ export default function PlannerScreen() {
   const [pickerYear, setPickerYear]           = useState(_today.getFullYear());
   const [pickerMonth, setPickerMonth]         = useState(_today.getMonth());
 
+  // Block overrides for the selected date
+  const [blockOverrides, setBlockOverrides] = useState<BlockOverrideLocal[]>([]);
+
+  // Edit block modal
+  const [editBlockVisible, setEditBlockVisible]     = useState(false);
+  const [editingBlock, setEditingBlock]             = useState<TemplateBlock | null>(null);
+  const [editBlockStartTime, setEditBlockStartTime] = useState('');
+  const [activeBlockPicker, setActiveBlockPicker]   = useState<'start' | 'end' | null>(null);
+  const [savingBlockEdit, setSavingBlockEdit]       = useState(false);
+
   // Schedule-next modal
-  const [scheduleNextVisible, setScheduleNextVisible]   = useState(false);
-  const [scheduleNextSource, setScheduleNextSource]     = useState<TaskInstance | null>(null);
-  const [scheduleNextDate, setScheduleNextDate]         = useState(TODAY_STR);
-  const [scheduleNextInstances, setScheduleNextInstances] = useState<TaskInstance[]>([]);
-  const [scheduleNextLoading, setScheduleNextLoading]   = useState(false);
-  const [savingNext, setSavingNext]                     = useState(false);
+  const [scheduleNextVisible, setScheduleNextVisible]       = useState(false);
+  const [scheduleNextSource, setScheduleNextSource]         = useState<TaskInstance | null>(null);
+  const [scheduleNextDate, setScheduleNextDate]             = useState(TODAY_STR);
+  const [scheduleNextInstances, setScheduleNextInstances]   = useState<TaskInstance[]>([]);
+  const [scheduleNextLoading, setScheduleNextLoading]       = useState(false);
+  const [savingNext, setSavingNext]                         = useState(false);
+  const [scheduleCalendarVisible, setScheduleCalendarVisible] = useState(false);
+  const [schedulePickerYear, setSchedulePickerYear]         = useState(_today.getFullYear());
+  const [schedulePickerMonth, setSchedulePickerMonth]       = useState(_today.getMonth());
 
   // Add task modal
   const [modalVisible, setModalVisible]       = useState(false);
@@ -141,12 +163,15 @@ export default function PlannerScreen() {
   const [taskEndTime, setTaskEndTime]         = useState<string | null>(null);
   const [activePicker, setActivePicker]       = useState<'start' | 'end' | null>(null);
   const [savingTask, setSavingTask]           = useState(false);
+  const [taskSearchResults, setTaskSearchResults] = useState<{ id: string; name: string }[]>([]);
+  const [selectedTaskId, setSelectedTaskId]       = useState<string | null>(null);
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const titleInputRef = useRef<TextInput>(null);
 
   useEffect(() => { loadStatic(); }, []);
-  useEffect(() => { loadTasks(selectedDate); }, [selectedDate]);
-  useFocusEffect(useCallback(() => { loadTasks(selectedDate); }, [selectedDate]));
+  useEffect(() => { loadTasks(selectedDate); loadBlockOverrides(selectedDate); }, [selectedDate]);
+  useFocusEffect(useCallback(() => { loadTasks(selectedDate); loadBlockOverrides(selectedDate); }, [selectedDate]));
   useEffect(() => {
     if (scheduleNextVisible) loadScheduleNextInstances(scheduleNextDate);
   }, [scheduleNextDate, scheduleNextVisible]);
@@ -175,6 +200,14 @@ export default function PlannerScreen() {
       .eq('scheduled_date', date)
       .order('created_at', { ascending: true });
     if (data) setTaskInstances(data as TaskInstance[]);
+  };
+
+  const loadBlockOverrides = async (date: string) => {
+    const { data } = await supabase
+      .from('block_overrides')
+      .select('*')
+      .eq('date', date);
+    if (data) setBlockOverrides(data as BlockOverrideLocal[]);
   };
 
   const loadScheduleNextInstances = async (date: string) => {
@@ -211,19 +244,51 @@ export default function PlannerScreen() {
     setCalendarVisible(false);
   };
 
+  const openScheduleCalendar = () => {
+    const d = new Date(scheduleNextDate + 'T00:00:00');
+    setSchedulePickerYear(d.getFullYear());
+    setSchedulePickerMonth(d.getMonth());
+    setScheduleCalendarVisible(true);
+  };
+
+  const shiftSchedulePickerMonth = (delta: number) => {
+    let m = schedulePickerMonth + delta;
+    let y = schedulePickerYear;
+    if (m > 11) { m = 0;  y += 1; }
+    if (m < 0)  { m = 11; y -= 1; }
+    setSchedulePickerMonth(m);
+    setSchedulePickerYear(y);
+  };
+
   // ── Derived values ────────────────────────────────────────────────────────
   const selectedDateObj = new Date(selectedDate + 'T00:00:00');
   const dayOfWeek       = selectedDateObj.getDay();
 
   const timedBlocks = allBlocks
     .filter(b => b.day_of_week === dayOfWeek && !b.is_all_day)
+    .map(b => {
+      const override = blockOverrides.find(o => o.weekly_template_block_id === b.id);
+      if (override?.is_cancelled) return null;
+      return {
+        ...b,
+        start_time: override?.start_time ?? b.start_time,
+        end_time:   override?.end_time   ?? b.end_time,
+        override,
+      };
+    })
+    .filter((b): b is NonNullable<typeof b> => b !== null)
     .sort((a, b) => a.start_time.localeCompare(b.start_time));
 
-  const endTimeFor = (index: number) =>
+  const endTimeFor = (_block: typeof timedBlocks[0], index: number) =>
     timedBlocks[index + 1]?.start_time ?? settings.bedtime;
 
   const sortByPriority = (instances: TaskInstance[]) =>
     [...instances].sort((a, b) => {
+      // 1. Tasks with a start time come first, sorted by that time
+      if (a.start_time && b.start_time) return a.start_time.localeCompare(b.start_time);
+      if (a.start_time) return -1;
+      if (b.start_time) return 1;
+      // 2. Among tasks with no time, sort by priority
       const pa = priorities.find(p => p.id === a.priority_level_id);
       const pb = priorities.find(p => p.id === b.priority_level_id);
       if (pa && pb) return pa.sort_index - pb.sort_index;
@@ -250,12 +315,34 @@ export default function PlannerScreen() {
     sortByPriority(scheduleNextInstances.filter(t => t.weekly_template_block_id === blockId));
 
   // ── Task actions ──────────────────────────────────────────────────────────
+  const searchTasks = async (query: string) => {
+    const { data } = await supabase
+      .from('tasks')
+      .select('id, name')
+      .ilike('name', `%${query}%`)
+      .limit(8);
+    setTaskSearchResults(data ?? []);
+  };
+
+  const handleTaskTitleChange = (text: string) => {
+    setTaskTitle(text);
+    setSelectedTaskId(null); // clear any existing-task selection when typing
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    if (text.trim().length === 0) {
+      setTaskSearchResults([]);
+      return;
+    }
+    searchTimeoutRef.current = setTimeout(() => searchTasks(text.trim()), 200);
+  };
+
   const openAddTask = (blockId: string | null) => {
     setAddingToBlockId(blockId);
     setTaskTitle('');
     setTaskPriorityId(null);
     setTaskStartTime(null);
     setTaskEndTime(null);
+    setTaskSearchResults([]);
+    setSelectedTaskId(null);
     setModalVisible(true);
   };
 
@@ -263,18 +350,22 @@ export default function PlannerScreen() {
     if (!taskTitle.trim() || !session) return;
     setSavingTask(true);
 
-    const { data: taskData, error: taskError } = await supabase
-      .from('tasks')
-      .insert({ user_id: session.user.id, name: taskTitle.trim() })
-      .select()
-      .single();
+    let taskId = selectedTaskId;
 
-    if (taskError || !taskData) { setSavingTask(false); return; }
+    if (!taskId) {
+      const { data: taskData, error: taskError } = await supabase
+        .from('tasks')
+        .insert({ user_id: session.user.id, name: taskTitle.trim() })
+        .select()
+        .single();
+      if (taskError || !taskData) { setSavingTask(false); return; }
+      taskId = taskData.id;
+    }
 
     const { data: instData, error: instError } = await supabase
       .from('task_instances')
       .insert({
-        task_id:                  taskData.id,
+        task_id:                  taskId,
         user_id:                  session.user.id,
         scheduled_date:           selectedDate,
         weekly_template_block_id: addingToBlockId,
@@ -301,7 +392,7 @@ export default function PlannerScreen() {
     await supabase.from('task_instances').update({ status: newStatus }).eq('id', instance.id);
 
     if (newStatus === 'complete') {
-      setScheduleNextDate(shiftDay(selectedDate, 1));
+      setScheduleNextDate(TODAY_STR);
       setScheduleNextSource(instance);
       Alert.alert(
         'Task Complete',
@@ -359,6 +450,114 @@ export default function PlannerScreen() {
     }
     setSavingNext(false);
     setScheduleNextVisible(false);
+  };
+
+  // ── Block edit actions ────────────────────────────────────────────────────
+  const openEditBlock = (block: typeof timedBlocks[0]) => {
+    setEditingBlock(block);
+    setEditBlockStartTime(block.start_time);
+    setEditBlockVisible(true);
+  };
+
+  const saveBlockEdit = async () => {
+    if (!editingBlock || !session) return;
+    setSavingBlockEdit(true);
+
+    const existing = blockOverrides.find(
+      o => o.weekly_template_block_id === editingBlock.id,
+    );
+
+    const payload = {
+      weekly_template_block_id: editingBlock.id,
+      user_id:                  session.user.id,
+      date:                     selectedDate,
+      start_time:               editBlockStartTime,
+      is_cancelled:             false,
+    };
+
+    let saved: BlockOverrideLocal | null = null;
+
+    if (existing) {
+      const { data } = await supabase
+        .from('block_overrides')
+        .update(payload)
+        .eq('id', existing.id)
+        .select()
+        .single();
+      saved = data as BlockOverrideLocal;
+    } else {
+      const { data } = await supabase
+        .from('block_overrides')
+        .insert(payload)
+        .select()
+        .single();
+      saved = data as BlockOverrideLocal;
+    }
+
+    if (saved) {
+      setBlockOverrides(prev => [
+        ...prev.filter(o => o.weekly_template_block_id !== editingBlock.id),
+        saved!,
+      ]);
+    }
+    setSavingBlockEdit(false);
+    setEditBlockVisible(false);
+  };
+
+  const cancelBlockToday = async () => {
+    if (!editingBlock || !session) return;
+    setSavingBlockEdit(true);
+
+    const existing = blockOverrides.find(
+      o => o.weekly_template_block_id === editingBlock.id,
+    );
+
+    const payload = {
+      weekly_template_block_id: editingBlock.id,
+      user_id:                  session.user.id,
+      date:                     selectedDate,
+      start_time:               editingBlock.start_time,
+      is_cancelled:             true,
+    };
+
+    let saved: BlockOverrideLocal | null = null;
+
+    if (existing) {
+      const { data } = await supabase
+        .from('block_overrides')
+        .update({ is_cancelled: true })
+        .eq('id', existing.id)
+        .select()
+        .single();
+      saved = data as BlockOverrideLocal;
+    } else {
+      const { data } = await supabase
+        .from('block_overrides')
+        .insert(payload)
+        .select()
+        .single();
+      saved = data as BlockOverrideLocal;
+    }
+
+    if (saved) {
+      setBlockOverrides(prev => [
+        ...prev.filter(o => o.weekly_template_block_id !== editingBlock.id),
+        saved!,
+      ]);
+      // Move any task instances in this block today to All Day
+      await supabase
+        .from('task_instances')
+        .update({ weekly_template_block_id: null })
+        .eq('weekly_template_block_id', editingBlock.id)
+        .eq('scheduled_date', selectedDate);
+      setTaskInstances(prev => prev.map(t =>
+        t.weekly_template_block_id === editingBlock.id
+          ? { ...t, weekly_template_block_id: null }
+          : t,
+      ));
+    }
+    setSavingBlockEdit(false);
+    setEditBlockVisible(false);
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -444,14 +643,19 @@ export default function PlannerScreen() {
                 style={[styles.blockSection, { backgroundColor: colors?.light ?? '#f5f5f5' }]}
               >
                 <View style={styles.sectionHeader}>
-                  <View>
+                  <TouchableOpacity
+                    onPress={() => openEditBlock(block)}
+                    activeOpacity={0.7}
+                    style={{ flex: 1 }}
+                  >
                     <Text style={[styles.blockTime, { color: colors?.dark ?? '#555' }]}>
-                      {fmt(block.start_time)} → {fmt(endTimeFor(index))}
+                      {fmt(block.start_time)} → {fmt(endTimeFor(block, index))}
+                      {block.override && <Text style={{ fontSize: 10 }}> ✎</Text>}
                     </Text>
                     <Text style={[styles.blockName, { color: colors?.dark ?? '#333' }]}>
                       {area?.name ?? '—'}
                     </Text>
-                  </View>
+                  </TouchableOpacity>
                   <TouchableOpacity
                     onPress={() => openAddTask(block.id)}
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -536,21 +740,23 @@ export default function PlannerScreen() {
                 return (
                   <TouchableOpacity
                     key={cellStr}
-                    style={[
-                      styles.calendarCell,
-                      isSelected && styles.calendarCellSelected,
-                      isToday && !isSelected && styles.calendarCellToday,
-                    ]}
+                    style={styles.calendarCell}
                     onPress={() => selectCalendarDay(day)}
                     activeOpacity={0.7}
                   >
-                    <Text style={[
-                      styles.calendarDayNum,
-                      isSelected && styles.calendarDayNumSelected,
-                      isToday && !isSelected && styles.calendarDayNumToday,
+                    <View style={[
+                      styles.calendarCellInner,
+                      isSelected && styles.calendarCellSelected,
+                      isToday && !isSelected && styles.calendarCellToday,
                     ]}>
-                      {day}
-                    </Text>
+                      <Text style={[
+                        styles.calendarDayNum,
+                        isSelected && styles.calendarDayNumSelected,
+                        isToday && !isSelected && styles.calendarDayNumToday,
+                      ]}>
+                        {day}
+                      </Text>
+                    </View>
                   </TouchableOpacity>
                 );
               })}
@@ -595,17 +801,56 @@ export default function PlannerScreen() {
               </TouchableOpacity>
             </View>
 
-            <ScrollView style={styles.modalBody} keyboardShouldPersistTaps="handled">
+            <ScrollView style={styles.modalBody} contentContainerStyle={{ paddingBottom: 64 }} keyboardShouldPersistTaps="handled">
               <TextInput
                 ref={titleInputRef}
                 style={styles.titleInput}
-                placeholder="Task name"
+                placeholder="Search or create a task"
                 placeholderTextColor="#bbb"
                 value={taskTitle}
-                onChangeText={setTaskTitle}
+                onChangeText={handleTaskTitleChange}
                 returnKeyType="done"
                 onSubmitEditing={saveTask}
               />
+
+              {/* Search results */}
+              {taskTitle.trim().length > 0 && !selectedTaskId && (
+                <View style={styles.searchResults}>
+                  {taskSearchResults.map((t, index) => {
+                    const isLast = index === taskSearchResults.length - 1
+                      && taskTitle.trim().toLowerCase() === t.name.toLowerCase();
+                    return (
+                      <TouchableOpacity
+                        key={t.id}
+                        style={[styles.searchRow, !isLast && styles.searchRowBorder]}
+                        onPress={() => {
+                          setTaskTitle(t.name);
+                          setSelectedTaskId(t.id);
+                          setTaskSearchResults([]);
+                        }}
+                        activeOpacity={0.6}
+                      >
+                        <Text style={styles.searchRowText}>{t.name}</Text>
+                        <Text style={styles.searchRowHint}>existing</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                  {taskSearchResults.every(
+                    t => t.name.toLowerCase() !== taskTitle.trim().toLowerCase(),
+                  ) && (
+                    <TouchableOpacity
+                      style={[styles.searchRow, styles.searchRowCreate]}
+                      onPress={() => { setTaskSearchResults([]); }}
+                      activeOpacity={0.6}
+                    >
+                      <Text style={[styles.searchRowText, styles.searchRowCreateText]}>
+                        Create "{taskTitle.trim()}"
+                      </Text>
+                      <Text style={[styles.searchRowHint, styles.searchRowCreateText]}>new</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              )}
 
               {priorities.length > 0 && (
                 <>
@@ -680,9 +925,94 @@ export default function PlannerScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
+      {/* ── Edit Block modal ── */}
+      <Modal
+        visible={editBlockVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+      >
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+          <View style={styles.modal}>
+            <View style={styles.modalHeader}>
+              <TouchableOpacity onPress={() => setEditBlockVisible(false)}>
+                <Text style={styles.modalCancel}>Cancel</Text>
+              </TouchableOpacity>
+              <Text style={styles.modalTitle}>Edit Block</Text>
+              <TouchableOpacity onPress={saveBlockEdit} disabled={savingBlockEdit}>
+                {savingBlockEdit
+                  ? <ActivityIndicator size="small" />
+                  : <Text style={styles.modalSave}>Save</Text>
+                }
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.modalBody} contentContainerStyle={{ paddingBottom: 64 }}>
+
+              {/* Block name info */}
+              {editingBlock && (() => {
+                const area   = areas.find(a => a.id === editingBlock.area_of_life_id);
+                const colors = area ? getPalette(area.color) : null;
+                return (
+                  <View style={[styles.blockInfoBanner, { backgroundColor: colors?.light ?? '#f5f5f5' }]}>
+                    <Text style={[styles.blockInfoName, { color: colors?.dark ?? '#333' }]}>
+                      {area?.name ?? '—'}
+                    </Text>
+                    <Text style={[styles.blockInfoSub, { color: colors?.dark ?? '#555' }]}>
+                      Changes apply to {fmtDateHeader(selectedDate)} only
+                    </Text>
+                  </View>
+                );
+              })()}
+
+              {/* Time pickers */}
+              <Text style={[styles.fieldLabel, { marginTop: 24 }]}>Time</Text>
+              <TouchableOpacity
+                style={styles.timeBtn}
+                onPress={() => setActiveBlockPicker('start')}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.timeBtnLabel}>Start</Text>
+                <Text style={styles.timeBtnValue}>{editBlockStartTime ? fmt(editBlockStartTime) : 'Not set'}</Text>
+              </TouchableOpacity>
+
+              {activeBlockPicker && (
+                <DateTimePicker
+                  mode="time"
+                  value={strToDate(activeBlockPicker === 'start' ? editBlockStartTime : editBlockEndTime)}
+                  is24Hour={false}
+                  onChange={(event, date) => {
+                    if (event.type !== 'dismissed' && date) {
+                      if (activeBlockPicker === 'start') setEditBlockStartTime(dateToTimeStr(date));
+                      else setEditBlockEndTime(dateToTimeStr(date));
+                    }
+                    setActiveBlockPicker(null);
+                  }}
+                />
+              )}
+
+              {/* Remove block for today */}
+              <TouchableOpacity
+                style={styles.cancelBlockBtn}
+                onPress={() => Alert.alert(
+                  'Remove Block',
+                  `Remove this block for ${fmtDateHeader(selectedDate)} only?`,
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Remove', style: 'destructive', onPress: cancelBlockToday },
+                  ],
+                )}
+              >
+                <Text style={styles.cancelBlockBtnText}>Remove this block today</Text>
+              </TouchableOpacity>
+
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
       {/* ── Schedule Next modal ── */}
       <Modal visible={scheduleNextVisible} animationType="slide" presentationStyle="pageSheet">
-        <View style={[styles.container, { paddingTop: 0 }]}>
+        <View style={[styles.container, { paddingTop: 0, position: 'relative' }]}>
           {/* Header */}
           <View style={styles.modalHeader}>
             <TouchableOpacity onPress={() => setScheduleNextVisible(false)}>
@@ -701,10 +1031,10 @@ export default function PlannerScreen() {
             >
               <Text style={styles.arrowText}>‹</Text>
             </TouchableOpacity>
-            <View style={styles.dateLabelBtn}>
+            <TouchableOpacity onPress={openScheduleCalendar} activeOpacity={0.7} style={styles.dateLabelBtn}>
               <Text style={styles.dateLabel}>{fmtDateHeader(scheduleNextDate)}</Text>
               {scheduleNextDate === TODAY_STR && <Text style={styles.todayBadge}>Today</Text>}
-            </View>
+            </TouchableOpacity>
             <TouchableOpacity
               onPress={() => setScheduleNextDate(d => shiftDay(d, 1))}
               hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
@@ -806,6 +1136,88 @@ export default function PlannerScreen() {
               </ScrollView>
             )
           }
+
+          {/* ── Inline calendar overlay (avoids nested-Modal issues on Android) ── */}
+          {scheduleCalendarVisible && (
+            <TouchableOpacity
+              style={styles.calendarOverlay}
+              activeOpacity={1}
+              onPress={() => setScheduleCalendarVisible(false)}
+            >
+              <TouchableOpacity activeOpacity={1} style={styles.calendarCard}>
+
+                <View style={styles.calendarHeader}>
+                  <TouchableOpacity
+                    onPress={() => shiftSchedulePickerMonth(-1)}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Text style={styles.calendarArrow}>‹</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.calendarMonthLabel}>
+                    {MONTH_NAMES[schedulePickerMonth]} {schedulePickerYear}
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() => shiftSchedulePickerMonth(1)}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Text style={styles.calendarArrow}>›</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.calendarRow}>
+                  {DAY_LETTERS.map((letter, i) => (
+                    <Text key={i} style={styles.calendarDayLabel}>{letter}</Text>
+                  ))}
+                </View>
+
+                <View style={styles.calendarGrid}>
+                  {buildCalendarCells(schedulePickerYear, schedulePickerMonth).map((day, i) => {
+                    if (day === null) return <View key={`e-${i}`} style={styles.calendarCell} />;
+                    const cellStr    = toDateStr(new Date(schedulePickerYear, schedulePickerMonth, day));
+                    const isToday    = cellStr === TODAY_STR;
+                    const isSelected = cellStr === scheduleNextDate;
+                    return (
+                      <TouchableOpacity
+                        key={cellStr}
+                        style={styles.calendarCell}
+                        onPress={() => {
+                          setScheduleNextDate(cellStr);
+                          setScheduleCalendarVisible(false);
+                        }}
+                        activeOpacity={0.7}
+                      >
+                        <View style={[
+                          styles.calendarCellInner,
+                          isSelected && styles.calendarCellSelected,
+                          isToday && !isSelected && styles.calendarCellToday,
+                        ]}>
+                          <Text style={[
+                            styles.calendarDayNum,
+                            isSelected && styles.calendarDayNumSelected,
+                            isToday && !isSelected && styles.calendarDayNumToday,
+                          ]}>
+                            {day}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                <TouchableOpacity
+                  style={styles.calendarTodayBtn}
+                  onPress={() => {
+                    setScheduleNextDate(TODAY_STR);
+                    setScheduleCalendarVisible(false);
+                  }}
+                >
+                  <Text style={styles.calendarTodayBtnText}>Go to Today</Text>
+                </TouchableOpacity>
+
+              </TouchableOpacity>
+            </TouchableOpacity>
+          )}
+
         </View>
       </Modal>
 
@@ -927,8 +1339,10 @@ const styles = StyleSheet.create({
 
   // Calendar modal
   calendarOverlay: {
-    flex: 1, backgroundColor: 'rgba(0,0,0,0.4)',
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.4)',
     justifyContent: 'center', alignItems: 'center',
+    zIndex: 10,
   },
   calendarCard: {
     backgroundColor: '#fff', borderRadius: 20, padding: 20,
@@ -953,11 +1367,15 @@ const styles = StyleSheet.create({
     width: `${100 / 7}%`, aspectRatio: 1,
     alignItems: 'center', justifyContent: 'center',
   },
+  calendarCellInner: {
+    width: 34, height: 34, borderRadius: 999,
+    alignItems: 'center', justifyContent: 'center',
+  },
   calendarCellSelected: {
-    backgroundColor: '#1a1a1a', borderRadius: 999,
+    backgroundColor: '#1a1a1a',
   },
   calendarCellToday: {
-    borderWidth: 1.5, borderColor: '#1a1a1a', borderRadius: 999,
+    borderWidth: 1.5, borderColor: '#1a1a1a',
   },
   calendarDayNum:         { fontSize: 14, color: '#1a1a1a', fontWeight: '500' },
   calendarDayNumSelected: { color: '#fff', fontWeight: '700' },
@@ -983,8 +1401,15 @@ const styles = StyleSheet.create({
   titleInput: {
     fontSize: 20, fontWeight: '500', color: '#1a1a1a',
     paddingVertical: 12, borderBottomWidth: 1.5,
-    borderBottomColor: '#e5e7eb', marginBottom: 28,
+    borderBottomColor: '#e5e7eb', marginBottom: 8,
   },
+  searchResults:   { backgroundColor: '#fff', borderRadius: 12, borderWidth: 1.5, borderColor: '#e5e7eb', overflow: 'hidden', marginBottom: 20 },
+  searchRow:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14 },
+  searchRowBorder: { borderBottomWidth: 1, borderBottomColor: '#e5e7eb' },
+  searchRowText:   { fontSize: 15, fontWeight: '500', color: '#1a1a1a', flex: 1 },
+  searchRowHint:       { fontSize: 11, fontWeight: '700', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: 0.5, marginLeft: 8 },
+  searchRowCreate:     { backgroundColor: '#1a1a1a' },
+  searchRowCreateText: { color: '#fff', opacity: 1 },
   fieldLabel: {
     fontSize: 13, fontWeight: '600', color: '#6b7280',
     textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12,
@@ -994,6 +1419,12 @@ const styles = StyleSheet.create({
   timeBtnLabel: { fontSize: 11, fontWeight: '700', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 },
   timeBtnValue: { fontSize: 15, fontWeight: '500', color: '#1a1a1a' },
   timeSep:      { fontSize: 16, color: '#9ca3af', fontWeight: '600' },
+
+  blockInfoBanner: { borderRadius: 12, padding: 14, marginBottom: 4 },
+  blockInfoName:   { fontSize: 18, fontWeight: '500' },
+  blockInfoSub:    { fontSize: 12, marginTop: 2, opacity: 0.7 },
+  cancelBlockBtn:     { marginTop: 32, paddingVertical: 16, borderRadius: 12, backgroundColor: '#fff5f5', borderWidth: 1.5, borderColor: '#fecaca', alignItems: 'center' },
+  cancelBlockBtnText: { fontSize: 15, fontWeight: '600', color: '#dc2626' },
 
   priorityList:        { backgroundColor: '#fff', borderRadius: 12, borderWidth: 1.5, borderColor: '#e5e7eb', overflow: 'hidden' },
   priorityRow:         { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14 },
