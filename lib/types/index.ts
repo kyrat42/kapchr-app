@@ -64,6 +64,7 @@ export interface Task {
   id: string;
   user_id: string;
   name: string;
+  notes?: string | null;
   created_at: string;
   // Joined
   checklist_items?: ChecklistItem[];
